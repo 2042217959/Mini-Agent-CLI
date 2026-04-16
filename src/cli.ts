@@ -31,11 +31,13 @@ const ask = (): void => {
       return;
     }
     try {
-      const res = await client.chat({
-        model,
-        messages: [{ role: "user", content: text }],
-      });
-      console.log(res.content ?? "(空回复)");
+      const messages = [{ role: "user" as const, content: text }];
+      for await (const delta of client.chatStream({ model, messages })) {
+        if (delta.content) {
+          process.stdout.write(delta.content);
+        }
+      }
+      process.stdout.write("\n");
     } catch (e) {
       if (e instanceof ArkError) {
         console.error(e.message);

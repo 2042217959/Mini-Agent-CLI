@@ -1,5 +1,6 @@
 // src/provider/types.ts
 import type { ToolCall } from "../types";
+import type { ChatStreamDelta } from "./stream";
 
 export type LlmRole = "user" | "assistant" | "tool" | "system";
 
@@ -34,4 +35,5 @@ export interface ChatResponse {
 
 export interface LlmClient {
   chat(req: ChatRequest): Promise<ChatResponse>;
+  chatStream(req: ChatRequest): AsyncIterable<ChatStreamDelta>;
 }

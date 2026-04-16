@@ -1,5 +1,7 @@
 // src/provider/ark-client.ts
 import type { ToolCall } from "../types";
+import { parseSse } from "./stream";
+import type { ChatStreamChunk, ChatStreamDelta } from "./stream";
 import type { ChatRequest, ChatResponse, LlmClient } from "./types";
 
 export class ArkError extends Error {
@@ -67,5 +69,31 @@ export class ArkClient implements LlmClient {
       finish_reason: choice.finish_reason,
       usage: json.usage,
     };
+  }
+  async *chatStream(req: ChatRequest): AsyncIterable<ChatStreamDelta> {
+    const res = await this.fetchImpl(`${this.base_url}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.api_key}`,
+        accept: "text/event-stream",                    // (A)
+      },
+      body: JSON.stringify({ ...req, stream: true }),   // (B)
+    });
+  
+    if (!res.ok) throw new ArkError(`Ark ${res.status}: ${await res.text()}`, res.status);
+    if (!res.body) throw new ArkError("Ark streaming response has no body", 0);
+  
+    for await (const frame of parseSse(res.body)) {      // (C)
+      if (frame.data === "[DONE]") return;               // (D)
+      let chunk: ChatStreamChunk;
+      try {
+        chunk = JSON.parse(frame.data) as ChatStreamChunk; // (E)
+      } catch {
+        continue;                                        // (F)
+      }
+      const delta = chunk.choices?.[0]?.delta;           // (G)
+      if (delta) yield delta;
+    }
   }
 }
