@@ -1,11 +1,10 @@
 import { createInterface } from "node:readline";
 import { z } from "zod";
+import { agentLoop } from "./agent/loop";
 import { parseRuntimeEnv, resolvedModel } from "./config/schema";
-import { aggregateStream } from "./provider/aggregate";
 import { ArkClient, ArkError } from "./provider/ark-client";
-import type { LlmMessage, LlmToolSpec } from "./provider/types";
-import { zodToJsonSchema } from "./tool/schema";
-import type { ToolCall } from "./types";
+import { ToolRegistry } from "./tools/registry";
+import type { AgentMessage } from "./types";
 import { VERSION } from "./version";
 
 const env = parseRuntimeEnv(process.env as Record<string, string | undefined>);
@@ -23,79 +22,23 @@ const GetWeatherArgs = z.object({
   city: z.string().describe("城市名，例如 北京、上海"),
 });
 
-const TOOL_SPECS: LlmToolSpec[] = [
-  {
-    type: "function",
-    function: {
-      name: "get_weather",
-      description: "查询指定城市的当前天气（温度、天气状况）。",
-      parameters: zodToJsonSchema(GetWeatherArgs) as Record<string, unknown>,
-    },
-  },
-];
+const tools = new ToolRegistry();
+tools.register({
+  name: "get_weather",
+  description: "查询指定城市的当前天气（温度、天气状况）。",
+  parameters: GetWeatherArgs,
+  needs_permission: false,
+  execute: async (args) => ({
+    ok: true,
+    content: `${args.city} 晴 22°C`,
+  }),
+});
 
-function executeFakeTool(call: ToolCall): string {
-  if (call.function.name !== "get_weather") {
-    return `工具 ${call.function.name} 不存在，可用工具：get_weather`;
-  }
-  let args: unknown;
-  try {
-    args = JSON.parse(call.function.arguments);
-  } catch {
-    return "参数不是合法 JSON，无法执行 get_weather";
-  }
-  const parsed = GetWeatherArgs.safeParse(args);
-  if (!parsed.success) {
-    return `参数校验失败：${parsed.error.message}`;
-  }
-  return `${parsed.data.city} 晴 22°C`;
-}
-
-async function runTurn(client: ArkClient, model: string, messages: LlmMessage[]): Promise<void> {
-  for (let step = 0; step < 5; step++) {
-    const stream = client.chatStream({
-      model,
-      messages,
-      tools: TOOL_SPECS,
-    });
-    const req = {
-        model,
-        messages,
-        tools: TOOL_SPECS,
-      };
-      console.log("[chatStream req]");
-      console.log(JSON.stringify(req, null, 2));
-      
-    const { content, tool_calls } = await aggregateStream(stream, (c) => process.stdout.write(c));
-
-    if (!tool_calls) {
-      process.stdout.write("\n");
-      messages.push({ role: "assistant", content });
-      return;
-    }
-
-    messages.push({ role: "assistant", content, tool_calls });
-
-    for (const call of tool_calls) {
-      const result = executeFakeTool(call);
-      console.log(`\n[tool] ${call.function.name} -> ${result}`);
-      messages.push({
-        role: "tool",
-        tool_call_id: call.id,
-        name: call.function.name,
-        content: result,
-      });
-    }
-  }
-  process.stdout.write("\n");
-  messages.push({
-    role: "assistant",
-    content: "（工具调用轮次过多，已中止。）",
-  });
-}
+const history: AgentMessage[] = [];
 
 console.log(`mini-agent ${VERSION}`);
 console.log(`model: ${model}`);
+console.log(`tools: ${tools.list().map((t) => t.name).join(", ")}`);
 console.log("输入 /exit 或按 Ctrl-D 退出。");
 
 const ask = (): void => {
@@ -111,8 +54,46 @@ const ask = (): void => {
       return;
     }
     try {
-      const messages: LlmMessage[] = [{ role: "user", content: text }];
-      await runTurn(client, model, messages);
+      const events = agentLoop({
+        client,
+        model,
+        tools,
+        history,
+        user_input: text,
+        tool_ctx_factory: () => ({
+          cwd: process.cwd(),
+          session_id: "repl-1",
+          abort_signal: new AbortController().signal,
+          logger: console,
+          on_progress: () => {},
+        }),
+      });
+
+      for await (const ev of events) {
+        switch (ev.kind) {
+          case "message_delta":
+            process.stdout.write(ev.text);
+            break;
+          case "tool_call_start":
+            process.stdout.write(
+              `\n[tool] ${ev.call.function.name}(${ev.call.function.arguments})...`,
+            );
+            break;
+          case "tool_result":
+            process.stdout.write(` ${ev.result.ok ? "\u2713" : "\u2717"}\n`);
+            break;
+          case "turn_end":
+            if (ev.reason === "error" && ev.error) {
+              console.error(ev.error.message);
+            }
+            process.stdout.write("\n");
+            break;
+          default:
+            break;
+        }
+      }
+      console.log("--- history after turn ---");
+      console.log(JSON.stringify(history, null, 2));
     } catch (e) {
       if (e instanceof ArkError) {
         console.error(e.message);
