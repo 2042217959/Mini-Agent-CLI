@@ -4,11 +4,23 @@ import { agentLoop } from "./agent/loop";
 import { parseRuntimeEnv, resolvedModel } from "./config/schema";
 import { ArkClient, ArkError } from "./provider/ark-client";
 import { ToolRegistry } from "./tools/registry";
+import { bash_tool } from "./tools/bash";
+import { glob_tool } from "./tools/glob";
+import { grep_tool } from "./tools/grep";
+import { ls_tool } from "./tools/ls";
+import { InMemoryPermissionState, StdinPermissionChecker } from "./tools/permission";
 import { read_tool } from "./tools/read";
 import { write_tool } from "./tools/write";
 import { edit_tool } from "./tools/edit";
 import type { AgentMessage } from "./types";
 import { VERSION } from "./version";
+
+const TOOL_ARGS_DISPLAY_MAX = 160;
+
+function truncateDisplay(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…`;
+}
 
 const env = parseRuntimeEnv(process.env as Record<string, string | undefined>);
 const apiKey = env.ARK_API_KEY;
@@ -39,13 +51,25 @@ tools.register({
     content: `${args.city} 晴 22°C`,
   }),
 });
+tools.register(bash_tool);
+tools.register(grep_tool);
+tools.register(glob_tool);
+tools.register(ls_tool);
 
 const history: AgentMessage[] = [];
+
+const permission_state = new InMemoryPermissionState();
+const permission = new StdinPermissionChecker(
+  permission_state,
+  new Set(),
+  new Set(),
+  (q) => new Promise((resolve) => rl.question(q, resolve)),
+);
 
 console.log(`mini-agent ${VERSION}`);
 console.log(`model: ${model}`);
 console.log(`tools: ${tools.list().map((t) => t.name).join(", ")}`);
-console.log("输入 /exit 或按 Ctrl-D 退出。");
+console.log("写文件 / 跑命令前会问你 y/n/a。输入 /exit 退出。");
 
 const ask = (): void => {
   rl.question("> ", async (line) => {
@@ -66,6 +90,7 @@ const ask = (): void => {
         tools,
         history,
         user_input: text,
+        permission,
         tool_ctx_factory: () => ({
           cwd: process.cwd(),
           session_id: "repl-1",
@@ -82,11 +107,11 @@ const ask = (): void => {
           case "message_delta":
             process.stdout.write(ev.text);
             break;
-          case "tool_call_start":
-            process.stdout.write(
-              `\n[tool] ${ev.call.function.name}(${ev.call.function.arguments})...`,
-            );
+          case "tool_call_start": {
+            const argsShown = truncateDisplay(ev.call.function.arguments ?? "", TOOL_ARGS_DISPLAY_MAX);
+            process.stdout.write(`\n[tool] ${ev.call.function.name}(${argsShown})...`);
             break;
+          }
           case "tool_result":
             process.stdout.write(` ${ev.result.ok ? "\u2713" : "\u2717"}\n`);
             break;

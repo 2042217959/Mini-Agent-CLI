@@ -1,5 +1,6 @@
 import { aggregateStream } from "../provider/aggregate";
 import type { LlmClient, LlmMessage } from "../provider/types";
+import type { PermissionChecker } from "../tools/permission";
 import type { ToolRegistry } from "../tools/registry";
 import type { AgentMessage, ToolContext, ToolResult } from "../types";
 import type { AgentEvent } from "./events";
@@ -18,6 +19,8 @@ export interface AgentLoopOptions {
   history: AgentMessage[];
   user_input: string;
   tool_ctx_factory: (call_id: string) => ToolContext;
+  /** 为 needs_permission 的工具在 execute 前做 y/n/a 等确认；未传则不做交互检查。 */
+  permission?: PermissionChecker;
 }
 
 function toLlmMessage(m: AgentMessage): LlmMessage {
@@ -40,7 +43,7 @@ function toLlmMessage(m: AgentMessage): LlmMessage {
 }
 
 export async function* agentLoop(opts: AgentLoopOptions): AsyncIterable<AgentEvent> {
-  const { client, model, tools, history, tool_ctx_factory } = opts;
+  const { client, model, tools, history, tool_ctx_factory, permission } = opts;
 
   const user_msg: AgentMessage = {
     id: newId(),
@@ -89,8 +92,19 @@ export async function* agentLoop(opts: AgentLoopOptions): AsyncIterable<AgentEve
           try {
             const args_raw = call.function.arguments ? JSON.parse(call.function.arguments) : {};
             const args = tool.parameters.parse(args_raw);
-            const ctx = tool_ctx_factory(call.id);
-            result = await tool.execute(args, ctx);
+
+            if (tool.needs_permission && permission) {
+              const decision = await permission.check(tool.name, args);
+              if (decision === "deny") {
+                result = { ok: false, content: "用户拒绝了该工具调用" };
+              } else {
+                const ctx = tool_ctx_factory(call.id);
+                result = await tool.execute(args, ctx);
+              }
+            } else {
+              const ctx = tool_ctx_factory(call.id);
+              result = await tool.execute(args, ctx);
+            }
           } catch (err) {
             result = { ok: false, content: err instanceof Error ? err.message : String(err) };
           }
