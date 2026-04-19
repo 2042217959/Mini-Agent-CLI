@@ -21,7 +21,7 @@ export interface ToolContext {
   session_id: string;
   abort_signal: AbortSignal;
   logger: Pick<Console, "log" | "error" | "warn" | "debug">;
-  on_progress: () => void;
+  on_progress: (chunk: string) => void;
 }
 
 /** 应用内消息（可持久化、带 id/ts）；与 LlmMessage 分离。 */

@@ -29,7 +29,7 @@ const noopCtx = () => ({
   session_id: "test",
   abort_signal: new AbortController().signal,
   logger: console,
-  on_progress: () => {},
+  on_progress: (_chunk: string) => {},
 });
 
 test("agentLoop: 纯文本 turn", async () => {

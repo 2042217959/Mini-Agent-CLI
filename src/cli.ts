@@ -4,6 +4,9 @@ import { agentLoop } from "./agent/loop";
 import { parseRuntimeEnv, resolvedModel } from "./config/schema";
 import { ArkClient, ArkError } from "./provider/ark-client";
 import { ToolRegistry } from "./tools/registry";
+import { read_tool } from "./tools/read";
+import { write_tool } from "./tools/write";
+import { edit_tool } from "./tools/edit";
 import type { AgentMessage } from "./types";
 import { VERSION } from "./version";
 
@@ -23,6 +26,9 @@ const GetWeatherArgs = z.object({
 });
 
 const tools = new ToolRegistry();
+tools.register(read_tool);
+tools.register(write_tool);
+tools.register(edit_tool);
 tools.register({
   name: "get_weather",
   description: "查询指定城市的当前天气（温度、天气状况）。",
@@ -65,7 +71,9 @@ const ask = (): void => {
           session_id: "repl-1",
           abort_signal: new AbortController().signal,
           logger: console,
-          on_progress: () => {},
+          on_progress: (_chunk: string) => {
+            /* 第 7 章 bash 会流式上报 stdout */
+          },
         }),
       });
 
@@ -92,8 +100,6 @@ const ask = (): void => {
             break;
         }
       }
-      console.log("--- history after turn ---");
-      console.log(JSON.stringify(history, null, 2));
     } catch (e) {
       if (e instanceof ArkError) {
         console.error(e.message);
