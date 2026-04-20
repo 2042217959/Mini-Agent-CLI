@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ToolDefinition } from "./registry";
+import { filter_env, PassthroughSandbox, type SandboxRunner } from "./sandbox";
 
 const OUT_MAX = 32_000;
 
@@ -22,38 +23,34 @@ export const bash_tool: ToolDefinition<z.infer<typeof BashArgs>> = {
   async execute(args, ctx) {
     const cwd = args.cwd ?? ctx.cwd;
     const timeout = args.timeout_ms ?? 60_000;
+    const env = filter_env(process.env);
 
-    const proc = Bun.spawn({
-      cmd: ["sh", "-c", args.command],
+    let sandbox: SandboxRunner = ctx.sandbox ?? new PassthroughSandbox();
+
+    const result = await sandbox.run({
+      command: args.command,
       cwd,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env,
+      timeout_ms: timeout,
+      env,
+      abort_signal: ctx.abort_signal,
     });
 
-    const timer = setTimeout(() => {
-      try {
-        proc.kill();
-      } catch {
-        /* ignore */
-      }
-    }, timeout);
-
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const exit_code = await proc.exited;
-    clearTimeout(timer);
-
-    const combined = stderr ? `${stdout}\n[stderr]\n${stderr}` : stdout;
+    const combined = result.stderr
+      ? `${result.stdout}\n[stderr]\n${result.stderr}`
+      : result.stdout;
     const truncated = combined.length > OUT_MAX;
     const out = truncated ? `${combined.slice(0, OUT_MAX)}\n[...truncated]` : combined;
 
+    const timed_note = result.timed_out ? " [timed_out]" : "";
     return {
-      ok: exit_code === 0,
-      content: `$ ${args.command}\n[exit=${exit_code}]\n${out}`,
-      metadata: { truncated, bytes: out.length },
+      ok: result.exit_code === 0 && !result.timed_out,
+      content: `$ ${args.command}\n[sandbox=${result.backend}]${timed_note} [exit=${result.exit_code}]\n${out}`,
+      metadata: {
+        truncated,
+        bytes: out.length,
+        timed_out: result.timed_out,
+        backend: result.backend,
+      },
     };
   },
 };

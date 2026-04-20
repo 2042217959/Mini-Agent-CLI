@@ -45,7 +45,7 @@ export class StdinPermissionChecker implements PermissionChecker {
     }
     if (this.auto_deny.has(tool_name)) return "deny";
 
-    const question = `\n[权限] 调用 ${tool_name}(${truncate(JSON.stringify(args), 200)})？(y/n/a=本次启动后续放行) `;
+    const question = `\n[权限] 调用 ${tool_name}(${truncate(JSON.stringify(args), 200)})？(y/n/a) `;
     const answer = await Promise.race([
       this.prompt(question),
       new Promise<string>((r) => setTimeout(() => r("n"), this.timeout_ms)),

@@ -1,3 +1,5 @@
+import type { SandboxRunner } from "./tools/sandbox";
+
 /** OpenAI 兼容协议里的 tool_calls 项（第 1 章 provider 类型会引用）。 */
 export interface ToolCall {
   id: string;
@@ -22,6 +24,8 @@ export interface ToolContext {
   abort_signal: AbortSignal;
   logger: Pick<Console, "log" | "error" | "warn" | "debug">;
   on_progress: (chunk: string) => void;
+  /** 第 8 章：命令沙箱；未提供时 bash 会退回 PassthroughSandbox */
+  sandbox?: SandboxRunner;
 }
 
 /** 应用内消息（可持久化、带 id/ts）；与 LlmMessage 分离。 */
