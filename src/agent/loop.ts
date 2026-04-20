@@ -21,6 +21,8 @@ export interface AgentLoopOptions {
   tool_ctx_factory: (call_id: string) => ToolContext;
   /** 为 needs_permission 的工具在 execute 前做 y/n/a 等确认；未传则不做交互检查。 */
   permission?: PermissionChecker;
+  /** 每轮请求前拼装 system prompt（cwd/时间/skill 等）；未传则不发 system 消息。 */
+  build_system_prompt?: () => string | null;
 }
 
 function toLlmMessage(m: AgentMessage): LlmMessage {
@@ -43,7 +45,7 @@ function toLlmMessage(m: AgentMessage): LlmMessage {
 }
 
 export async function* agentLoop(opts: AgentLoopOptions): AsyncIterable<AgentEvent> {
-  const { client, model, tools, history, tool_ctx_factory, permission } = opts;
+  const { client, model, tools, history, tool_ctx_factory, permission, build_system_prompt } = opts;
 
   const user_msg: AgentMessage = {
     id: newId(),
@@ -57,7 +59,10 @@ export async function* agentLoop(opts: AgentLoopOptions): AsyncIterable<AgentEve
   for (let step = 0; step < MAX_STEPS; step++) {
     try {
       const specs = tools.to_llm_specs();
-      const llm_messages = history.map(toLlmMessage);
+      const llm_messages: LlmMessage[] = [];
+      const system_text = build_system_prompt?.() ?? null;
+      if (system_text) llm_messages.push({ role: "system", content: system_text });
+      for (const m of history) llm_messages.push(toLlmMessage(m));
 
       let delta_buf = "";
       const stream = client.chatStream({ model, messages: llm_messages, tools: specs });

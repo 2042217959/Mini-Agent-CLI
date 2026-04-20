@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { join } from "node:path";
 import { z } from "zod";
 import { agentLoop } from "./agent/loop";
 import { parseRuntimeEnv, resolvedModel } from "./config/schema";
@@ -15,25 +16,31 @@ import { edit_tool } from "./tools/edit";
 import { PassthroughSandbox } from "./tools/sandbox";
 import { pickSandbox, type PickSandboxOptions } from "./tools/sandbox/auto";
 import type { AgentMessage } from "./types";
+import { loadClaudeMd } from "./prompt/claude-md";
+import { defaultUserSkillsDir, loadSkills } from "./prompt/skill";
+import { buildSystemPrompt } from "./prompt/system";
 import { VERSION } from "./version";
 
-function parse_sandbox_cli_flags(argv: string[]): {
+function parse_cli_flags(argv: string[]): {
   unsafe_bash: boolean;
   force_sandbox?: PickSandboxOptions["force"];
+  no_skills: boolean;
 } {
   let unsafe_bash = false;
+  let no_skills = false;
   let raw: string | undefined;
   for (const a of argv) {
     if (a === "--unsafe-bash") unsafe_bash = true;
+    if (a === "--no-skills") no_skills = true;
     const m = /^--force-sandbox=(.+)$/.exec(a);
     if (m) raw = m[1];
   }
   const allowed = ["sandbox-exec", "bwrap", "docker", "passthrough"] as const;
   if (raw && !(allowed as readonly string[]).includes(raw)) {
     console.warn(`[sandbox] 未知 --force-sandbox=${raw}，忽略。`);
-    return { unsafe_bash, force_sandbox: undefined };
+    return { unsafe_bash, force_sandbox: undefined, no_skills };
   }
-  return { unsafe_bash, force_sandbox: raw as PickSandboxOptions["force"] };
+  return { unsafe_bash, force_sandbox: raw as PickSandboxOptions["force"], no_skills };
 }
 
 const TOOL_ARGS_DISPLAY_MAX = 160;
@@ -51,10 +58,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const argv_flags = parse_sandbox_cli_flags(process.argv.slice(2));
+  const argv_flags = parse_cli_flags(process.argv.slice(2));
   const sandbox = argv_flags.unsafe_bash
     ? new PassthroughSandbox()
     : await pickSandbox({ force: argv_flags.force_sandbox });
+
+  const cwd = process.cwd();
+  const claude_md = loadClaudeMd(cwd);
+  const skills = argv_flags.no_skills
+    ? []
+    : loadSkills({
+        project_dir: join(cwd, ".mini-agent", "skills"),
+        user_dir: defaultUserSkillsDir(),
+      });
 
   const model = resolvedModel(env);
   const client = new ArkClient({ api_key: apiKey });
@@ -97,6 +113,9 @@ async function main(): Promise<void> {
   console.log(`model: ${model}`);
   console.log(`sandbox: ${sandbox.backend}`);
   console.log(`tools: ${tools.list().map((t) => t.name).join(", ")}`);
+  if (skills.length > 0) {
+    console.log(`skills: ${skills.map((s) => s.name).join(", ")}`);
+  }
   if (argv_flags.unsafe_bash) {
     console.warn("[sandbox] --unsafe-bash 开启：bash 将裸跑，无隔离。");
   }
@@ -122,6 +141,14 @@ async function main(): Promise<void> {
           history,
           user_input: text,
           permission,
+          build_system_prompt: () =>
+            buildSystemPrompt({
+              cwd,
+              tool_names: tools.list().map((t) => t.name),
+              claude_md,
+              skills,
+              sandbox_mode: sandbox.backend,
+            }),
           tool_ctx_factory: () => ({
             cwd: process.cwd(),
             session_id: "repl-1",
